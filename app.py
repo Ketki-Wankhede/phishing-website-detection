@@ -1,69 +1,68 @@
-import streamlit as st
+
 import pandas as pd
 import joblib
 
-# ---------- Page setup ----------
-st.set_page_config(page_title="Phishing Website Detector", page_icon="🎣")
-st.title("🎣 Phishing Website Detector")
-st.write(
-    "This tool uses a Random Forest model trained on 10,000 websites "
-    "(Kaggle Phishing Dataset) to predict whether a site is phishing or legitimate. "
-    "Adjust the sliders below based on a website's characteristics."
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score
+
+# Load and clean dataset
+df = pd.read_csv("Phishing_Legitimate_full.csv")
+df = df.drop_duplicates()
+
+# Prepare features and target
+X = df.drop(columns=["CLASS_LABEL", "id"])
+y = df["CLASS_LABEL"]
+
+# Split data
+X_train, X_test, y_train, y_test = train_test_split(
+    X,
+    y,
+    test_size=0.20,
+    random_state=42,
+    stratify=y
 )
 
-# ---------- Load model bundle ----------
-@st.cache_resource
-def load_bundle():
-    return joblib.load("phishing_model.pkl")
-
-bundle = load_bundle()
-model = bundle["model"]
-all_columns = bundle["all_columns"]
-top_features = bundle["top_features"]
-medians = bundle["medians"]
-ranges = bundle["ranges"]
-
-# ---------- Build input form (only top features) ----------
-st.subheader("Website Features")
-user_input = {}
-
-cols = st.columns(2)
-for i, feat in enumerate(top_features):
-    lo, hi = ranges[feat]
-    is_percent_like = (lo in (0, -1)) and (hi == 1)  # features like PctExtHyperlinks, range 0-1 or -1 to 1
-    with cols[i % 2]:
-        if is_percent_like:
-            default = float(medians[feat])
-            user_input[feat] = st.slider(feat, min_value=float(lo), max_value=float(hi), value=default, step=0.01)
-        else:
-            default = int(medians[feat])
-            user_input[feat] = st.slider(feat, min_value=lo, max_value=hi, value=default)
-
-# ---------- Predict ----------
-if st.button("Check Website", type="primary"):
-    # Start with median values for every feature the model expects
-    row = medians.copy()
-    # Overwrite with the values the user actually chose
-    for feat, val in user_input.items():
-        row[feat] = val
-    # Put columns in the exact order the model was trained on
-    input_df = pd.DataFrame([row])[all_columns]
-
-    pred = model.predict(input_df)[0]
-    prob = model.predict_proba(input_df)[0][1]  # probability of class 1 = Phishing
-
-    st.divider()
-    if pred == 1:
-        st.error(f"🚨 **Likely Phishing** — confidence: {prob*100:.1f}%")
-    else:
-        st.success(f"✅ **Likely Legitimate** — confidence: {(1-prob)*100:.1f}%")
-
-    st.progress(float(prob))
-    st.caption("Bar shows the model's estimated probability of phishing.")
-
-st.divider()
-st.caption(
-    "Model: Random Forest (98.5% accuracy on Kaggle test set). "
-    "Only the top 8 most important features are adjustable here; "
-    "the rest are filled in with typical (median) values."
+# Train model
+model = RandomForestClassifier(
+    n_estimators=200,
+    random_state=42,
+    n_jobs=-1
 )
+model.fit(X_train, y_train)
+
+# Evaluate model
+predictions = model.predict(X_test)
+accuracy = accuracy_score(y_test, predictions)
+print(f"Random Forest Accuracy: {accuracy * 100:.2f}%")
+
+# Prepare default values and slider ranges
+medians = X_train.median().to_dict()
+
+ranges = {
+    col: (float(X_train[col].min()), float(X_train[col].max()))
+    for col in X_train.columns
+}
+
+# Select eight important features
+importance = pd.Series(
+    model.feature_importances_,
+    index=X_train.columns
+)
+top_features = importance.nlargest(8).index.tolist()
+
+# Create complete app bundle
+bundle = {
+    "model": model,
+    "feature_names": list(X_train.columns),
+    "all_columns": list(X_train.columns),
+    "top_features": top_features,
+    "medians": medians,
+    "ranges": ranges,
+}
+
+# Save model bundle
+joblib.dump(bundle, "random_forest_model.pkl")
+
+print("Model bundle saved successfully.")
+print("Adjustable features:", top_features)
