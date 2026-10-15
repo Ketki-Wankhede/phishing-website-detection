@@ -1,68 +1,96 @@
 
+import streamlit as st
 import pandas as pd
 import joblib
 
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score
-
-# Load and clean dataset
-df = pd.read_csv("Phishing_Legitimate_full.csv")
-df = df.drop_duplicates()
-
-# Prepare features and target
-X = df.drop(columns=["CLASS_LABEL", "id"])
-y = df["CLASS_LABEL"]
-
-# Split data
-X_train, X_test, y_train, y_test = train_test_split(
-    X,
-    y,
-    test_size=0.20,
-    random_state=42,
-    stratify=y
+st.set_page_config(
+    page_title="Phishing Website Detector",
+    page_icon="🎣",
+    layout="wide"
 )
 
-# Train model
-model = RandomForestClassifier(
-    n_estimators=200,
-    random_state=42,
-    n_jobs=-1
+@st.cache_resource
+def load_bundle():
+    return joblib.load("random_forest_model.pkl")
+
+st.title("🎣 Phishing Website Detector")
+st.write(
+    "This machine learning demo estimates whether a website "
+    "may be phishing or legitimate."
 )
-model.fit(X_train, y_train)
 
-# Evaluate model
-predictions = model.predict(X_test)
-accuracy = accuracy_score(y_test, predictions)
-print(f"Random Forest Accuracy: {accuracy * 100:.2f}%")
+try:
+    bundle = load_bundle()
+    model = bundle["model"]
+    all_columns = bundle["feature_names"]
+    top_features = bundle["top_features"]
+    medians = bundle["medians"]
+    ranges = bundle["ranges"]
+except Exception as e:
+    st.error("Could not load the trained model.")
+    st.exception(e)
+    st.stop()
 
-# Prepare default values and slider ranges
-medians = X_train.median().to_dict()
-
-ranges = {
-    col: (float(X_train[col].min()), float(X_train[col].max()))
-    for col in X_train.columns
-}
-
-# Select eight important features
-importance = pd.Series(
-    model.feature_importances_,
-    index=X_train.columns
+st.subheader("Website Features")
+st.info(
+    "Adjust the eight important features. Other features "
+    "will use typical values from the training dataset."
 )
-top_features = importance.nlargest(8).index.tolist()
 
-# Create complete app bundle
-bundle = {
-    "model": model,
-    "feature_names": list(X_train.columns),
-    "all_columns": list(X_train.columns),
-    "top_features": top_features,
-    "medians": medians,
-    "ranges": ranges,
-}
+user_input = {}
+cols = st.columns(2)
 
-# Save model bundle
-joblib.dump(bundle, "random_forest_model.pkl")
+for i, feat in enumerate(top_features):
+    lo, hi = ranges[feat]
+    default = float(medians[feat])
 
-print("Model bundle saved successfully.")
-print("Adjustable features:", top_features)
+    with cols[i % 2]:
+        if lo == hi:
+            user_input[feat] = default
+        elif (lo in (0, -1)) and hi == 1:
+            user_input[feat] = st.slider(
+                feat,
+                min_value=float(lo),
+                max_value=float(hi),
+                value=max(float(lo), min(float(hi), default)),
+                step=0.01
+            )
+        else:
+            user_input[feat] = st.slider(
+                feat,
+                min_value=float(lo),
+                max_value=float(hi),
+                value=max(float(lo), min(float(hi), default)),
+            )
+
+if st.button("Check Website", type="primary"):
+    row = medians.copy()
+    row.update(user_input)
+    input_df = pd.DataFrame([row])[all_columns]
+
+    try:
+        pred = model.predict(input_df)[0]
+        prob = model.predict_proba(input_df)[0][1]
+
+        st.divider()
+        if pred == 1:
+            st.error(
+                f"🚨 Likely Phishing — model score: {prob * 100:.1f}%"
+            )
+        else:
+            st.success(
+                f"✅ Likely Legitimate — model score: "
+                f"{(1 - prob) * 100:.1f}%"
+            )
+
+        st.progress(float(prob))
+        st.caption("The bar shows the model's estimated phishing probability.")
+    except Exception as e:
+        st.error("Prediction failed.")
+        st.exception(e)
+
+st.divider()
+st.caption(
+    "Model: Random Forest. Test accuracy: 98.50%. "
+    "This is a demonstration, not a guarantee of website safety."
+)
